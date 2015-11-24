@@ -1,0 +1,172 @@
+- hosts: all
+
+  vars:
+    jupyter_user: jupyter
+    jupyter_home: /home/{{ jupyter_user }}
+  
+  handlers:
+    - name: update APT cache
+      apt: update_cache=yes
+
+  tasks:
+
+    - name: add signing key for Apache Bigtop repository
+      command: apt-key adv --keyserver keys.gnupg.net --recv-keys 3A367EA0FA08B173
+      
+    - name: add Apache Bigtop repository
+      apt_repository:
+        # download from: http://www.apache.org/dist/bigtop/bigtop-1.0.0/repos/trusty/bigtop.list
+        repo='deb http://bigtop-repos.s3.amazonaws.com/releases/1.0.0/ubuntu/trusty/x86_64 bigtop contrib'
+        state=present
+      notify:
+        - update APT cache
+    
+    - name: Install Java
+      apt: name=openjdk-7-jre state=present
+
+    #
+    # Hadoop YARN
+    #
+
+    - name: Install Hadoop packages
+      tags:
+        - hadoop
+      apt: name=="{{ item }}" state=present
+      with_items:
+        - hadoop # Hadoop is a software platform for processing vast amounts of data
+        - hadoop-client # Hadoop client side dependencies
+        - hadoop-conf-pseudo # Single-node cluster
+        - hadoop-doc # Hadoop Documentation
+        - hadoop-hdfs # The Hadoop Distributed File System
+        - hadoop-hdfs-datanode # Hadoop Data Node
+        - hadoop-hdfs-fuse # Mountable HDFS
+        - hadoop-hdfs-journalnode # Hadoop HDFS JournalNode
+        - hadoop-hdfs-namenode # The Hadoop namenode manages the block locations of HDFS files
+        - hadoop-hdfs-secondarynamenode # Hadoop Secondary namenode
+        - hadoop-hdfs-zkfc # Hadoop HDFS failover controller
+        - hadoop-httpfs # HTTPFS for Hadoop
+        - hadoop-mapreduce # The Hadoop MapReduce (MRv2)
+        - hadoop-mapreduce-historyserver # MapReduce History Server
+        - hadoop-yarn # The Hadoop NextGen MapReduce (YARN)
+        - hadoop-yarn-nodemanager # YARN Node Manager
+        - hadoop-yarn-proxyserver # YARN Web Proxy
+        - hadoop-yarn-resourcemanager # YARN Resource Manager
+
+    - name: Format HDFS
+      tags:
+        - hadoop
+      command: hdfs namenode -format creates="/var/lib/hadoop-hdfs/cache/hdfs/dfs/name/current/VERSION"
+      become: yes
+      become_user: hdfs
+
+    - name: Make entire HDFS world-writable
+      tags:
+        - hadoop
+      command: hdfs dfs -chmod 0777 /
+      become: yes
+      become_user: hdfs
+
+    - name: Start HDFS services
+      tags:
+        - hadoop
+      service:
+        name="{{ item }}"
+        state=started
+        enabled=yes
+      with_items:
+        - hadoop-hdfs-namenode
+        - hadoop-hdfs-datanode
+
+    - name: Start YARN services
+      tags:
+        - hadoop
+      service:
+        name="{{ item }}"
+        state=started
+        enabled=yes
+      with_items:
+        - hadoop-yarn-resourcemanager
+        - hadoop-yarn-nodemanager
+        - hadoop-mapreduce-historyserver
+
+    #
+    # Spark
+    #
+
+    - name: Install Spark
+      apt: name="{{ item }}" state=present
+      with_items:
+        - spark-master
+        - spark-worker
+        - spark-python
+
+    #
+    # Jupyter/IPython + PySpark
+    #
+    
+    - name: Install Jupyter pre-requirements
+      tags:
+        - jupyter
+        - spark
+      apt: name="{{ item }}" state=present
+      with_items:
+        - build-essential
+        - python
+        - python-dev
+        - python-matplotlib 
+        - w3m
+
+    - name: Install Jupyter requirements
+      tags:
+        - jupyter
+        - spark
+      pip: name="{{ item }}"
+      with_items:
+        - backports_abc
+        - certifi
+        - jsonschema
+        - path.py
+        - singledispatch
+        - zmq
+
+    - name: Install Jupyter
+      tags:
+        - jupyter
+        - spark
+      pip: name=jupyter
+
+
+    #
+    # User-level setup
+    #
+
+    - name: Create Jupyter user
+      tags:
+        - jupyter
+        - user
+      user:
+        name="{{ jupyter_user }}"
+        home="{{ jupyter_home }}"
+        createhome=yes
+        state=present
+    
+    - name: Create Jupyter/IPython startup directory
+      tags:
+        - jupyter
+        - user
+      file:
+        path="{{ jupyter_home }}/.ipython/profile_default/startup"
+        state=directory
+        owner="{{ jupyter_user }}"
+        group="{{ jupyter_user }}"
+        mode=0755
+        recurse=yes
+  
+    - name: Deploy PySpark startup file into IPython
+      tags:
+        - jupyter
+        - spark
+        - user
+      copy:
+        src="files/pyspark-setup.py"
+        dest="{{ jupyter_home }}/.ipython/profile_default/startup/00-pyspark-setup.py"
